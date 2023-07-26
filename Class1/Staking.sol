@@ -12,7 +12,7 @@ contract StakingContract is IERC20, Ownable {
     uint8 private immutable _decimals;
 
     // lock time in blocks
-    uint256 public lockTime = 403200;
+    uint256 public lockTime = 7 days;
 
     // fee for leaving staking early
     uint256 public leaveEarlyFee = 6;
@@ -25,12 +25,11 @@ contract StakingContract is IERC20, Ownable {
 
     // Reward Token
     address public immutable reward;
-    address public rewardTokenSwapper;
 
     // User Info
     struct UserInfo {
         uint256 amount;
-        uint256 unlockBlock;
+        uint256 unlockTime;
         uint256 totalExcluded;
     }
     // Address => UserInfo
@@ -116,7 +115,7 @@ contract StakingContract is IERC20, Ownable {
 
     function setLockTime(uint256 newLockTime) external onlyOwner {
         require(
-            newLockTime <= 10**7,
+            newLockTime <= 10**8,
             'Lock Time Too Long'
         );
         lockTime = newLockTime;
@@ -139,14 +138,6 @@ contract StakingContract is IERC20, Ownable {
         );
         feeRecipient = newFeeRecipient;
         emit SetFeeRecipient(newFeeRecipient);
-    }
-
-    function setRewardTokenSwapper(address newTokenSwapper) external onlyOwner {
-        require(
-            newTokenSwapper != address(0),
-            'Zero Address'
-        );
-        rewardTokenSwapper = newTokenSwapper;
     }
 
     function withdrawForeignToken(address token_) external onlyOwner {
@@ -212,7 +203,7 @@ contract StakingContract is IERC20, Ownable {
         // update data
         totalShares += received;
         userInfo[msg.sender].amount += received;
-        userInfo[msg.sender].unlockBlock = block.number + lockTime;
+        userInfo[msg.sender].unlockTime = block.timestamp + lockTime;
         userInfo[msg.sender].totalExcluded = getCumulativeDividends(userInfo[msg.sender].amount);
 
         emit Transfer(address(0), msg.sender, amount);
@@ -251,18 +242,26 @@ contract StakingContract is IERC20, Ownable {
     }
 
     function _transferIn(address _token, uint256 amount) internal returns (uint256) {
-        uint before = IERC20(_token).balanceOf(address(this));
-        bool s = IERC20(_token).transferFrom(msg.sender, address(this), amount);
-        uint received = IERC20(_token).balanceOf(address(this)) - before;
         require(
-            s && received > 0 && received <= amount,
-            'Error On Transfer From'
+            IERC20(_token).balanceOf(msg.sender) >= amount,
+            'Insufficient Balance'
         );
-        return received;
+        require(
+            IERC20(_token).allowance(msg.sender, address(this)) >= amount,
+            'Insufficient Allowance'
+        );
+        uint before = IERC20(_token).balanceOf(address(this));
+        IERC20(_token).transferFrom(msg.sender, address(this), amount);
+        uint After = IERC20(_token).balanceOf(address(this));
+        require(
+            After > before,
+            'Zero Received'
+        );
+        return After - before;
     }
 
     function timeUntilUnlock(address user) public view returns (uint256) {
-        return userInfo[user].unlockBlock < block.number ? 0 : userInfo[user].unlockBlock - block.number;
+        return userInfo[user].unlockTime < block.timestamp ? 0 : userInfo[user].unlockTime - block.timestamp;
     }
 
     function pendingRewards(address shareholder) public view returns (uint256) {
@@ -280,21 +279,6 @@ contract StakingContract is IERC20, Ownable {
         return ( share * dividendsPerShare ) / precision;
     }
 
-    receive() external payable {
-        require(
-            msg.value > 0,
-            'Zero Amount'
-        );
-        // purchase reward token
-        uint before = IERC20(reward).balanceOf(address(this));
-        (bool s,) = payable(rewardTokenSwapper).call{value: msg.value}("");
-        require(s, 'Failure On Token Purchase');
-        uint After = IERC20(reward).balanceOf(address(this));
-        require(After > before, 'Zero Received');
-        uint256 received = After - before;
-        // update rewards
-        dividendsPerShare += ( precision * received ) / totalShares;
-        totalRewards += received;
-    }
+    receive() external payable {}
 
 }
